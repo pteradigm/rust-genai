@@ -85,10 +85,17 @@ impl futures::Stream for OpenAIStreamer {
 						self.done = true;
 
 						// -- Build the usage and captured_content
-						// TODO: Needs to clarify wh for usage we do not adopt the same strategy from captured content below
 						let captured_usage = if self.options.capture_usage {
-							self.captured_data.usage.take()
+							let usage = self.captured_data.usage.take();
+							tracing::debug!(
+								captured_usage = ?usage,
+								adapter_kind = ?self.options.model_iden.adapter_kind,
+								model = %self.options.model_iden.model_name,
+								"[DONE] finalizing stream — captured usage state"
+							);
+							usage
 						} else {
+							tracing::debug!("[DONE] capture_usage=false, skipping usage");
 							None
 						};
 
@@ -162,6 +169,13 @@ impl futures::Stream for OpenAIStreamer {
 						// as there might be other messages, and the last one contains data: `[DONE]`
 						// NOTE: xAI has no `finish_reason` when not finished, so, need to just account for both null/absent
 						if let Ok(_finish_reason) = first_choice.x_take::<String>("finish_reason") {
+							tracing::debug!(
+								finish_reason = %_finish_reason,
+								adapter_kind = ?adapter_kind,
+								has_usage_in_message = message_data.get("usage").is_some(),
+								"finish_reason chunk received"
+							);
+
 							// NOTE: Some providers (e.g., Ollama) send tool_calls AND finish_reason in the same message.
 							// We need to capture tool_calls here before continuing to the next message.
 							if let Ok(delta_tool_calls) = first_choice.x_take::<Value>("/delta/tool_calls")
@@ -281,13 +295,33 @@ impl futures::Stream for OpenAIStreamer {
 								return Poll::Ready(Some(Ok(InterStreamEvent::ReasoningChunk(reasoning_content))));
 							}
 
-							// If we do not have content, then log a trace message
-							// TODO: use tracing debug
-							tracing::warn!("EMPTY CHOICE CONTENT");
+							// No content or reasoning — check if this chunk carries usage
+							// (e.g. OpenRouter sends usage in a final chunk that still has
+							// a populated choices array with empty content).
+							if self.options.capture_usage
+								&& self.captured_data.usage.is_none()
+							{
+								if let Ok(usage_val) = message_data.x_take::<Value>("usage") {
+									tracing::debug!(
+										raw_usage = %usage_val,
+										"captured usage from non-empty-choices chunk"
+									);
+									let usage = OpenAIAdapter::into_usage(adapter_kind, usage_val);
+									self.captured_data.usage = Some(usage);
+								}
+							}
 						}
 					}
-					// -- Usage message
+					// -- Usage message (no choices or empty choices array)
 					else {
+						tracing::debug!(
+							adapter_kind = ?adapter_kind,
+							capture_usage = self.options.capture_usage,
+							usage_already_captured = self.captured_data.usage.is_some(),
+							raw_message = %message_data,
+							"no-choice chunk received (potential usage carrier)"
+						);
+
 						// If it's not Groq, xAI, DeepSeek the usage is captured at the end when choices are empty or null
 						if !matches!(adapter_kind, AdapterKind::Groq)
 							&& !matches!(adapter_kind, AdapterKind::DeepSeek)
@@ -295,10 +329,18 @@ impl futures::Stream for OpenAIStreamer {
 							&& self.options.capture_usage
 						{
 							// permissive for now
-							let usage = message_data
-								.x_take("usage")
+							let raw_usage = message_data.x_take::<Value>("usage");
+							tracing::debug!(
+								raw_usage_result = ?raw_usage,
+								"x_take(\"usage\") result from no-choice chunk"
+							);
+							let usage = raw_usage
 								.map(|v| OpenAIAdapter::into_usage(adapter_kind, v))
 								.unwrap_or_default();
+							tracing::debug!(
+								parsed_usage = ?usage,
+								"parsed Usage from no-choice chunk"
+							);
 							self.captured_data.usage = Some(usage);
 						}
 					}
