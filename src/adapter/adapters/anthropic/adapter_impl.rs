@@ -3,7 +3,7 @@ use crate::adapter::anthropic::AnthropicStreamer;
 use crate::adapter::{Adapter, AdapterKind, ServiceType, WebRequestData};
 use crate::chat::{
 	Binary, BinarySource, ChatOptionsSet, ChatRequest, ChatResponse, ChatRole, ChatStream, ChatStreamResponse,
-	ContentPart, MessageContent, PromptTokensDetails, ReasoningEffort, ToolCall, Usage,
+	ContentPart, MessageContent, PromptTokensDetails, ReasoningEffort, ToolCall, ToolChoice, Usage,
 };
 use crate::resolver::{AuthData, Endpoint};
 use crate::webc::{EventSourceStream, WebResponse};
@@ -162,6 +162,16 @@ impl Adapter for AnthropicAdapter {
 
 		if let Some(tools) = tools {
 			payload.x_insert("/tools", tools)?;
+		}
+
+		// -- Tool choice
+		if let Some(tool_choice) = options_set.tool_choice() {
+			let tc_value = match tool_choice {
+				ToolChoice::Auto => json!({"type": "auto"}),
+				ToolChoice::Any => json!({"type": "any"}),
+				ToolChoice::Tool(name) => json!({"type": "tool", "name": name}),
+			};
+			payload.x_insert("tool_choice", tc_value)?;
 		}
 
 		// -- Set the reasoning effort

@@ -68,6 +68,14 @@ pub struct ChatOptions {
 
 	/// Additional HTTP headers to include with the request.
 	pub extra_headers: Option<Headers>,
+
+	/// Tool choice constraint. When set, forces the model to call a specific
+	/// tool (or any tool) rather than choosing freely.
+	///
+	/// Provider mapping:
+	/// - Anthropic: `tool_choice: {"type": "tool", "name": "..."}`
+	/// - OpenAI: `tool_choice: {"type": "function", "function": {"name": "..."}}`
+	pub tool_choice: Option<ToolChoice>,
 }
 
 /// Chainable Setters
@@ -165,6 +173,12 @@ impl ChatOptions {
 	/// Adds extra HTTP headers.
 	pub fn with_extra_headers(mut self, headers: impl Into<Headers>) -> Self {
 		self.extra_headers = Some(headers.into());
+		self
+	}
+
+	/// Forces the model to call a specific tool.
+	pub fn with_tool_choice(mut self, value: ToolChoice) -> Self {
+		self.tool_choice = Some(value);
 		self
 	}
 
@@ -416,6 +430,25 @@ impl std::str::FromStr for ServiceTier {
 
 // endregion: --- ServiceTier
 
+// region:    --- ToolChoice
+
+/// Constraint on which tool the model must call.
+///
+/// - `Auto`: The model may call any tool or none (default behavior).
+/// - `Any`: The model must call at least one tool, but may choose which.
+/// - `Tool(name)`: The model must call the named tool specifically.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ToolChoice {
+	/// Model decides freely whether and which tool to call.
+	Auto,
+	/// Model must call at least one tool.
+	Any,
+	/// Model must call the specified tool.
+	Tool(String),
+}
+
+// endregion: --- ToolChoice
+
 // region:    --- ChatOptionsSet
 
 /// This is an internal crate struct to resolve the ChatOptions value in a cascading manner.
@@ -535,6 +568,12 @@ impl ChatOptionsSet<'_, '_> {
 		self.chat
 			.and_then(|chat| chat.extra_headers.as_ref())
 			.or_else(|| self.client.and_then(|client| client.extra_headers.as_ref()))
+	}
+
+	pub fn tool_choice(&self) -> Option<&ToolChoice> {
+		self.chat
+			.and_then(|chat| chat.tool_choice.as_ref())
+			.or_else(|| self.client.and_then(|client| client.tool_choice.as_ref()))
 	}
 
 	/// Returns true only if there is a ChatResponseFormat::JsonMode
