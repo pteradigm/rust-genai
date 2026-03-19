@@ -24,6 +24,9 @@ enum InProgressBlock {
 	Text,
 	ToolUse { id: String, name: String, input: String },
 	Thinking,
+	/// Unknown/unsupported block type (e.g. redacted_thinking from OpenRouter).
+	/// Deltas for this block are silently skipped.
+	Skip,
 }
 
 impl AnthropicStreamer {
@@ -79,9 +82,13 @@ impl futures::Stream for AnthropicStreamer {
 										input: String::new(),
 									};
 								}
-								Ok(txt) => {
-									tracing::warn!("unhandled content type: {txt}");
-								}
+							Ok(txt) => {
+								tracing::debug!("skipping unsupported content block type: {txt}");
+								self.in_progress_block = InProgressBlock::Skip;
+							}
+
+
+
 								Err(e) => {
 									tracing::error!("{e:?}");
 								}
@@ -145,6 +152,11 @@ impl futures::Stream for AnthropicStreamer {
 										continue;
 									}
 								}
+							InProgressBlock::Skip => {
+								// Silently skip deltas for unsupported block types
+								// (e.g. redacted_thinking from OpenRouter).
+								continue;
+							}
 							}
 						}
 						"content_block_stop" => {
