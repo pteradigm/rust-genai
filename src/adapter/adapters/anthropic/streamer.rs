@@ -98,7 +98,13 @@ impl futures::Stream for AnthropicStreamer {
 
 							match &mut self.in_progress_block {
 								InProgressBlock::Text => {
-									let content: String = data.x_take("/delta/text")?;
+									// Gracefully handle missing /delta/text — OpenRouter's
+									// Anthropic Messages proxy may send content_block_delta
+									// events with an empty or missing text field.
+									let content: String = data.x_take("/delta/text").unwrap_or_default();
+									if content.is_empty() {
+										continue;
+									}
 
 									// Add to the captured_content if chat options say so
 									if self.options.capture_content {
@@ -111,7 +117,9 @@ impl futures::Stream for AnthropicStreamer {
 									return Poll::Ready(Some(Ok(InterStreamEvent::Chunk(content))));
 								}
 								InProgressBlock::ToolUse { input, .. } => {
-									input.push_str(data.x_get_str("/delta/partial_json")?);
+									// Same graceful handling for tool input deltas.
+									let json_chunk: &str = data.x_get_str("/delta/partial_json").unwrap_or_default();
+									input.push_str(json_chunk);
 									continue;
 								}
 								InProgressBlock::Thinking => {
