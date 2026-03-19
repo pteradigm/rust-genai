@@ -74,7 +74,10 @@ impl futures::Stream for AnthropicStreamer {
 
 							match data.x_get_str("/content_block/type") {
 								Ok("text") => self.in_progress_block = InProgressBlock::Text,
-								Ok("thinking") => self.in_progress_block = InProgressBlock::Thinking,
+								Ok("thinking") => {
+									tracing::info!("received thinking content block (extended thinking active)");
+									self.in_progress_block = InProgressBlock::Thinking;
+								}
 								Ok("tool_use") => {
 									self.in_progress_block = InProgressBlock::ToolUse {
 										id: data.x_take("/content_block/id")?,
@@ -82,13 +85,14 @@ impl futures::Stream for AnthropicStreamer {
 										input: String::new(),
 									};
 								}
-							Ok(txt) => {
-								tracing::debug!("skipping unsupported content block type: {txt}");
-								self.in_progress_block = InProgressBlock::Skip;
-							}
-
-
-
+								Ok("redacted_thinking") => {
+									tracing::info!("received redacted_thinking block (thinking content withheld by provider)");
+									self.in_progress_block = InProgressBlock::Skip;
+								}
+								Ok(txt) => {
+									tracing::debug!("skipping unsupported content block type: {txt}");
+									self.in_progress_block = InProgressBlock::Skip;
+								}
 								Err(e) => {
 									tracing::error!("{e:?}");
 								}
@@ -131,6 +135,8 @@ impl futures::Stream for AnthropicStreamer {
 								}
 								InProgressBlock::Thinking => {
 									if let Ok(thinking) = data.x_take::<String>("/delta/thinking") {
+										tracing::debug!(len = thinking.len(), "thinking content delta");
+
 										// Add to the captured_thinking if chat options say so
 										if self.options.capture_reasoning_content {
 											match self.captured_data.reasoning_content {
@@ -152,11 +158,11 @@ impl futures::Stream for AnthropicStreamer {
 										continue;
 									}
 								}
-							InProgressBlock::Skip => {
-								// Silently skip deltas for unsupported block types
-								// (e.g. redacted_thinking from OpenRouter).
-								continue;
-							}
+								InProgressBlock::Skip => {
+									// Silently skip deltas for unsupported block types
+									// (e.g. redacted_thinking from OpenRouter).
+									continue;
+								}
 							}
 						}
 						"content_block_stop" => {
@@ -252,14 +258,23 @@ impl AnthropicStreamer {
 			let data = self.parse_message_data(message_data)?;
 			// TODO: Might want to exit early if usage is not found
 
-			let (input_path, output_path) = if message_type == "message_start" {
-				("/message/usage/input_tokens", "/message/usage/output_tokens")
+			let (input_path, output_path, cache_creation_path, cache_read_path) = if message_type == "message_start" {
+				(
+					"/message/usage/input_tokens",
+					"/message/usage/output_tokens",
+					"/message/usage/cache_creation_input_tokens",
+					"/message/usage/cache_read_input_tokens",
+				)
 			} else if message_type == "message_delta" {
-				("/usage/input_tokens", "/usage/output_tokens")
+				(
+					"/usage/input_tokens",
+					"/usage/output_tokens",
+					"/usage/cache_creation_input_tokens",
+					"/usage/cache_read_input_tokens",
+				)
 			} else {
-				// TODO: Use tracing
 				tracing::debug!(
-					"TRACING DEBUG - Anthropic message type not supported for input/output tokens: {message_type}"
+					"Anthropic message type not supported for input/output tokens: {message_type}"
 				);
 				return Ok(()); // For now permissive
 			};
@@ -284,6 +299,25 @@ impl AnthropicStreamer {
 					.completion_tokens
 					.get_or_insert(0);
 				*val += output_tokens;
+			}
+
+			// -- Capture cache tokens into prompt_tokens_details
+			if let Ok(cache_creation) = data.x_get::<i32>(cache_creation_path) {
+				if cache_creation > 0 {
+					let usage = self.captured_data.usage.get_or_insert(Usage::default());
+					let details = usage.prompt_tokens_details.get_or_insert_with(Default::default);
+					let val = details.cache_creation_tokens.get_or_insert(0);
+					*val += cache_creation;
+				}
+			}
+
+			if let Ok(cache_read) = data.x_get::<i32>(cache_read_path) {
+				if cache_read > 0 {
+					let usage = self.captured_data.usage.get_or_insert(Usage::default());
+					let details = usage.prompt_tokens_details.get_or_insert_with(Default::default);
+					let val = details.cached_tokens.get_or_insert(0);
+					*val += cache_read;
+				}
 			}
 		}
 
