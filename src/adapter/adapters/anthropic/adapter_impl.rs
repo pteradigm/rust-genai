@@ -184,8 +184,8 @@ impl Adapter for AnthropicAdapter {
 
 			// In short, should use both thinking budget and effort
 
-			// -- if opus-4-5 then, we set the anthropic effort
-			if model_name.contains("opus-4-5") {
+			// -- for Claude 4.x models, set the anthropic effort parameter
+			if model_name.contains("opus-4") || model_name.contains("sonnet-4") {
 				let effort = match computed_reasoning_effort {
 					ReasoningEffort::Minimal => "low",
 					ReasoningEffort::Low => "low",
